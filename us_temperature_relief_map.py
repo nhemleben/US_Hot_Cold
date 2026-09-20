@@ -61,6 +61,7 @@ GRID_NX, GRID_NY = 260, 160  # resolution of the terrain grid
 SMOOTH_SIGMA = 2.6           # gaussian blur strength (higher = smoother/blurrier)
 SHOW_LABELS = True           # draw state abbreviation labels on the terrain
 OUTPUT_DPI = 180
+GAUSS_SMOOTH = False # apply gaussian smoothing to the terrain
 
 # ---------------------------------------------------------------------------
 # DATA: record high / low temperature by state (deg F), NOAA NCDC records
@@ -193,7 +194,8 @@ def build_voronoi_terrain(values):
     Z = state_vals[nearest]
 
     # smooth into continuous, rolling terrain
-    Z = gaussian_filter(Z, sigma=SMOOTH_SIGMA)
+    if GAUSS_SMOOTH:
+        Z = gaussian_filter(Z, sigma=SMOOTH_SIGMA)
 
     # mask to the convex hull of the state centers so the plot reads as a
     # US-shaped landmass rather than a rectangle. Hull is padded outward
@@ -274,7 +276,12 @@ def build_real_terrain(values):
         Z = result.reshape(LON.shape)
         valid_mask = ~np.isnan(Z)
         filled = np.where(valid_mask, Z, np.nanmin(Z))
-        Z = gaussian_filter(filled, sigma=SMOOTH_SIGMA * 0.6)
+
+        if GAUSS_SMOOTH:
+            Z = gaussian_filter(filled, sigma=SMOOTH_SIGMA * 0.6)
+        else:
+            Z = filled
+
         Z[~valid_mask] = np.nan
         return LON, LAT, Z
     except Exception as exc:  # noqa: BLE001
