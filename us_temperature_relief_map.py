@@ -45,6 +45,8 @@ Requirements (core):  numpy, scipy, matplotlib
 Requirements (optional, for USE_REAL_BORDERS): geopandas, shapely, requests
 """
 
+import os
+import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
@@ -374,9 +376,16 @@ def plot_relief(values, title, cmap_name, label_suffix, filename):
 
     fig.tight_layout()
     fig.savefig(filename, dpi=OUTPUT_DPI, facecolor="white")
+
+    # also pickle the live Figure so it can be reloaded later and still be
+    # rotated/zoomed interactively (a saved .png is a flat, static image)
+    pickle_path = os.path.splitext(filename)[0] + ".fig.pickle"
+    with open(pickle_path, "wb") as f:
+        pickle.dump(fig, f)
+
     plt.show(block=True)
     #plt.close(fig)
-    print(f"Saved {filename}")
+    print(f"Saved {filename} (static) and {pickle_path} (reopen with load_figure.py to rotate)")
 
 
 def main():
@@ -393,6 +402,17 @@ def main():
         cmap_name="Blues_r",
         label_suffix="Low",
         filename="us_record_low_valleys.png",
+    )
+
+    #"AL": (112, "Centerville", 1925), "AK": (100, "Fort Yukon", 1915),
+    RECORD_RANGE = {abbr: (RECORD_HIGH[abbr][0] - RECORD_LOW[abbr][0], "no location", 0) for abbr in RECORD_HIGH}
+
+    plot_relief(
+        RECORD_RANGE,
+        title="U.S. Record-Range Relief Map\n(range = all-time record high minus low temperature)",
+        cmap_name="viridis",
+        label_suffix="Range",
+        filename="us_record_range.png",
     )
 
 
