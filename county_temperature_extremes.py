@@ -162,8 +162,14 @@ def parse_cty_csv(path):
         dtype={"fips": str, "postal_code": str, "region_name": str, "date": str},
     )
     df["fips"] = df["fips"].str.zfill(5)
-    df["tmax"] = pd.to_numeric(df["tmax"], errors="coerce")
-    df["tmin"] = pd.to_numeric(df["tmin"], errors="coerce")
+    tmax_c = pd.to_numeric(df["tmax"], errors="coerce")
+    tmin_c = pd.to_numeric(df["tmin"], errors="coerce")
+    # NOAA pads nonexistent days (e.g. Feb 30/31) with this sentinel and an
+    # empty date, for every county - must be masked or it wins as a bogus
+    # "record low"/"record high".
+    sentinel = (tmax_c == -999.99) | (tmin_c == -999.99)
+    df["tmax"] = tmax_c.mask(sentinel)
+    df["tmin"] = tmin_c.mask(sentinel)
     # region_name is "ST: County Name"; drop the leading "ST: " prefix
     county_name = df["region_name"].str.split(":", n=1).str[-1].str.strip()
     df["place"] = county_name + ", " + df["postal_code"]
@@ -228,15 +234,22 @@ def write_output_py(record_high, record_low, path=OUTPUT_PY):
         f.write("RECORD_HIGH_COUNTY = {\n")
         for fips in sorted(record_high):
             temp, place, year = record_high[fips]
-            f.write(f'    "{fips}": ({temp}, {place!r}, {year}),\n')
+            f.write(f'    "cty, {fips}": ({temp}, {place!r}, {year}),\n')
         f.write("}\n\n")
         f.write("RECORD_LOW_COUNTY = {\n")
         for fips in sorted(record_low):
             temp, place, year = record_low[fips]
-            f.write(f'    "{fips}": ({temp}, {place!r}, {year}),\n')
+            f.write(f'    "cty, {fips}": ({temp}, {place!r}, {year}),\n')
         f.write("}\n")
     print(f"Wrote {path} ({len(record_high)} counties high, {len(record_low)} counties low)")
 
+
+def consolidate_records(paths):
+    print("Scanning files for record highs...")
+    best_high = accumulate_records(paths, mode="max")
+    print("Scanning files for record lows...")
+    best_low = accumulate_records(paths, mode="min")
+    return build_dict(best_high), build_dict(best_low)
 
 def run_pipeline():
     print("Discovering county files on NOAA's S3 bucket...")
@@ -252,13 +265,7 @@ def run_pipeline():
     print("Downloading (cached locally in ./noaa_county_cache/)...")
     paths = [download(k) for k in keys]
 
-    print("Scanning files for record highs...")
-    best_high = accumulate_records(paths, mode="max")
-    print("Scanning files for record lows...")
-    best_low = accumulate_records(paths, mode="min")
-
-    record_high = build_dict(best_high)
-    record_low = build_dict(best_low)
+    record_high, record_low = consolidate_records(paths)
 
     write_output_py(record_high, record_low)
 
@@ -317,6 +324,8 @@ if __name__ == "__main__":
                          help="Download one county file and print its real structure, then exit.")
     parser.add_argument("--selftest", action="store_true",
                          help="Run the offline self-test of the parsing/aggregation logic.")
+    parser.add_argument("--consolidate", action="store_true",
+                         help="Run the consolidation of record highs and lows.")
     args = parser.parse_args()
 
     if args.selftest:
@@ -328,5 +337,20 @@ if __name__ == "__main__":
             sys.exit(1)
         path = download(keys[0])
         inspect_file(path)
+    elif args.consolidate:
+        from pathlib import Path
+        file_names = [str(p) for p in Path("noaa_county_cache").iterdir() if p.is_file()]
+        record_high, record_low = consolidate_records(file_names)
+
+        import csv
+        with open("all_time_extremes/record_extremes.csv", "w") as f:
+            writer = csv.writer(f)
+            writer.writerow(["region_type", "fips", "tmax", "tmin", "place", "year"])
+            for fips, (temp, place, year) in record_high.items():
+                writer.writerow(["cty", fips, temp, record_low[fips][0], place, year])
+
+        print("Consolidation complete.")
+        print(f"Record high entries: {len(record_high)}")
+        print(f"Record low entries: {len(record_low)}")
     else:
         run_pipeline()

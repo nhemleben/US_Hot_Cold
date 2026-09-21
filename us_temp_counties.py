@@ -133,6 +133,11 @@ def load_county_temperature_records(filename):
     high = {}
     low = {}
 
+    # NOAA pads nonexistent days (e.g. Feb 30/31) with this sentinel and an
+    # empty date, for every county - must be skipped or it wins as a bogus
+    # "record low"/"record high".
+    SENTINEL = -999.99
+
     with open(filename, "r", newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
 
@@ -142,20 +147,22 @@ def load_county_temperature_records(filename):
                 continue
 
             fips = row["fips"].strip()
-            date = row["date"].strip()
-            region_name = row["region_name"].strip()
+            #region_name = row["region_name"].strip()
 
             # Convert temperature strings to floats.
             tmax = float(row["tmax"].strip())
             tmin = float(row["tmin"].strip())
 
+            if tmax == SENTINEL and tmin == SENTINEL:
+                continue
+
             # Record high
             if ( fips not in high or tmax > high[fips][0]):
-                high[fips] = ( tmax, region_name, date,)
+                high[fips] = ( tmax, )
 
             # Record low
             if ( fips not in low or tmin < low[fips][0]):
-                low[fips] = ( tmin, region_name, date,)
+                low[fips] = ( tmin, )
 
     return high, low
 
@@ -622,21 +629,13 @@ def main():
     COUNTY_SHAPES = load_county_shapes()
     print(f"Loaded {len(COUNTY_SHAPES)} county shapes.")
 
-    file_names = [
-        "195102-scaled.csv",  "195110-scaled.csv",  "195206-scaled.csv",  "195302-scaled.csv",
-        "195103-scaled.csv",  "195111-scaled.csv",  "195207-scaled.csv",  "195303-scaled.csv",
-        "195104-scaled.csv",  "195112-scaled.csv",  "195208-scaled.csv",  "195304-scaled.csv",
-        "195105-scaled.csv",  "195201-scaled.csv",  "195209-scaled.csv",  "195305-scaled.csv",
-        "195106-scaled.csv",  "195202-scaled.csv",  "195210-scaled.csv",  "195306-scaled.csv",
-        "195107-scaled.csv",  "195203-scaled.csv",  "195211-scaled.csv",
-        "195108-scaled.csv",  "195204-scaled.csv",  "195212-scaled.csv",
-        "195109-scaled.csv",  "195205-scaled.csv",  "195301-scaled.csv"
-    ]
+    from pathlib import Path
+    file_names = [str(p) for p in Path("all_time_extremes").iterdir() if p.is_file()]
 
-    Running_High, Running_Low = load_county_temperature_records( "noaa_county_cache/" + file_names[0])
+    Running_High, Running_Low = load_county_temperature_records(  file_names[0])
 
     for index in range(1, len(file_names)):
-        current_high, current_low = load_county_temperature_records( "noaa_county_cache/" + file_names[index])
+        current_high, current_low = load_county_temperature_records(  file_names[index])
         for abbr in current_high:
             if abbr not in Running_High or current_high[abbr][0] > Running_High[abbr][0]:
                 Running_High[abbr] = current_high[abbr]
