@@ -10,6 +10,8 @@ from scipy.spatial import ConvexHull
 from matplotlib.path import Path
 import csv
 
+from us_temperature_relief_map import RECORD_LOW
+
 
 # ---------------------------------------------------------------------------
 # CONFIGURATION
@@ -121,19 +123,10 @@ def load_county_shapes():
 
 def load_county_temperature_records(filename):
     """Load county temperature data and find all-time records.
-
     Returns:
-        RECORD_HIGH:
-            {
-                fips: (highest_tmax, region_name, date),
-                ...
-            }
+        RECORD_HIGH: { fips: (highest_tmax, region_name, date), ...  }
 
-        RECORD_LOW:
-            {
-                fips: (lowest_tmin, region_name, date),
-                ...
-            }
+        RECORD_LOW: { fips: (lowest_tmin, region_name, date), ...  }
     """
 
     # Temporary storage while determining records.
@@ -156,31 +149,13 @@ def load_county_temperature_records(filename):
             tmax = float(row["tmax"].strip())
             tmin = float(row["tmin"].strip())
 
-            # ---------------------------------------------------------------
             # Record high
-            # ---------------------------------------------------------------
-            if (
-                fips not in high
-                or tmax > high[fips][0]
-            ):
-                high[fips] = (
-                    tmax,
-                    region_name,
-                    date,
-                )
+            if ( fips not in high or tmax > high[fips][0]):
+                high[fips] = ( tmax, region_name, date,)
 
-            # ---------------------------------------------------------------
             # Record low
-            # ---------------------------------------------------------------
-            if (
-                fips not in low
-                or tmin < low[fips][0]
-            ):
-                low[fips] = (
-                    tmin,
-                    region_name,
-                    date,
-                )
+            if ( fips not in low or tmin < low[fips][0]):
+                low[fips] = ( tmin, region_name, date,)
 
     return high, low
 
@@ -250,8 +225,9 @@ def build_county_terrain(values):
     LAT = np.linspace(LAT_MIN, LAT_MAX, GRID_NY)
 
     lon_grid, lat_grid = np.meshgrid(LON, LAT)
-
-    Z = np.full(lon_grid.shape, np.nan, dtype=float)
+    flat_lon = lon_grid.ravel()
+    flat_lat = lat_grid.ravel()
+    Z_flat = np.full(flat_lon.shape, np.nan, dtype=float)
 
     matched = 0
 
@@ -260,26 +236,33 @@ def build_county_terrain(values):
         if fips not in values:
             continue
 
-
         value = float(values[fips])
         matched += 1
-        if matched % 100 == 0:
-            print(f"Processed {matched} counties.")
+        #if matched % 100 == 0:
+            #print(f"Processed {matched} counties.")
 
         for polygon in polygons:
             exterior = np.asarray(polygon)
 
+            # only test grid points inside this county's bounding box -
+            # testing the full CONUS grid for every county is what made
+            # this loop slow (~130M point-in-polygon tests total)
+            minx, miny = exterior.min(axis=0)
+            maxx, maxy = exterior.max(axis=0)
+            candidates = np.where(
+                (flat_lon >= minx) & (flat_lon <= maxx)
+                & (flat_lat >= miny) & (flat_lat <= maxy)
+            )[0]
+            if candidates.size == 0:
+                continue
+
             path = Path(exterior)
-
-            points = np.column_stack([
-                lon_grid.ravel(),
-                lat_grid.ravel(),
-            ])
-
+            points = np.column_stack([flat_lon[candidates], flat_lat[candidates]])
             inside = path.contains_points(points)
 
-            Z.ravel()[inside] = value
-        
+            Z_flat[candidates[inside]] = value
+
+    Z = Z_flat.reshape(lon_grid.shape)
 
     if matched == 0:
         raise ValueError(
@@ -591,7 +574,10 @@ def plot_relief(values, title, cmap_name, label_suffix, filename):
     ax.set_xticks([])
     ax.set_yticks([])
     ax.view_init(elev=42, azim=-100)
-    ax.set_box_aspect((LON_MAX - LON_MIN, LAT_MAX - LAT_MIN, (vmax - vmin) * 0.9))
+    # a zero (or near-zero) z-extent makes mplot3d's world_transformation
+    # divide by zero, producing a singular projection matrix on draw
+    z_extent = max(vmax - vmin, 1e-6)
+    ax.set_box_aspect((LON_MAX - LON_MIN, LAT_MAX - LAT_MIN, z_extent * 0.9))
 
     cbar = fig.colorbar(surf, ax=ax, shrink=0.55, pad=0.02)
     cbar.set_label(f"Record {label_suffix} (\u00b0F)", fontsize=10)
@@ -607,14 +593,18 @@ def plot_relief(values, title, cmap_name, label_suffix, filename):
         color="gray"
     )
 
-    # fig.tight_layout() can raise a singular-matrix LinAlgError on 3D axes
-    # for certain view angles (a known matplotlib mplot3d limitation) -
-    # bbox_inches="tight" on savefig achieves the same trimming safely.
+    # tight_layout()/bbox_inches="tight" both recompute a tight bbox for the
+    # 3D axes, which can raise a singular-matrix LinAlgError for some view
+    # angles (a known mplot3d limitation) - skip and fall back to a plain
+    # save if that happens, rather than losing the whole figure.
     try:
         fig.tight_layout()
     except np.linalg.LinAlgError:
         pass
-    fig.savefig(filename, dpi=OUTPUT_DPI, facecolor="white", bbox_inches="tight")
+    try:
+        fig.savefig(filename, dpi=OUTPUT_DPI, facecolor="white", bbox_inches="tight")
+    except np.linalg.LinAlgError:
+        fig.savefig(filename, dpi=OUTPUT_DPI, facecolor="white")
 
     # also pickle the live Figure so it can be reloaded later and still be
     # rotated/zoomed interactively (a saved .png is a flat, static image)
@@ -632,10 +622,33 @@ def main():
     COUNTY_SHAPES = load_county_shapes()
     print(f"Loaded {len(COUNTY_SHAPES)} county shapes.")
 
-    RECORD_HIGH, RECORD_LOW = load_county_temperature_records(
-    "noaa_county_cache/195102-scaled.csv"
-    )
+    file_names = [
+        "195102-scaled.csv",  "195110-scaled.csv",  "195206-scaled.csv",  "195302-scaled.csv",
+        "195103-scaled.csv",  "195111-scaled.csv",  "195207-scaled.csv",  "195303-scaled.csv",
+        "195104-scaled.csv",  "195112-scaled.csv",  "195208-scaled.csv",  "195304-scaled.csv",
+        "195105-scaled.csv",  "195201-scaled.csv",  "195209-scaled.csv",  "195305-scaled.csv",
+        "195106-scaled.csv",  "195202-scaled.csv",  "195210-scaled.csv",  "195306-scaled.csv",
+        "195107-scaled.csv",  "195203-scaled.csv",  "195211-scaled.csv",
+        "195108-scaled.csv",  "195204-scaled.csv",  "195212-scaled.csv",
+        "195109-scaled.csv",  "195205-scaled.csv",  "195301-scaled.csv"
+    ]
+
+    Running_High, Running_Low = load_county_temperature_records( "noaa_county_cache/" + file_names[0])
+
+    for index in range(1, len(file_names)):
+        current_high, current_low = load_county_temperature_records( "noaa_county_cache/" + file_names[index])
+        for abbr in current_high:
+            if abbr not in Running_High or current_high[abbr][0] > Running_High[abbr][0]:
+                Running_High[abbr] = current_high[abbr]
+        for abbr in current_low:
+            if abbr not in Running_Low or current_low[abbr][0] < Running_Low[abbr][0]:
+                Running_Low[abbr] = current_low[abbr]
+
+    RECORD_HIGH, RECORD_LOW = Running_High, Running_Low
+
     print(f"Loaded {len(RECORD_HIGH)} record high entries.")
+    print(RECORD_HIGH[list(RECORD_HIGH.keys())[0]])
+    print(RECORD_LOW[list(RECORD_LOW.keys())[0]])
 
     plot_relief(
         RECORD_HIGH,
